@@ -28,6 +28,8 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-latest
+    # 正常 2 分钟以内；卡在下载上时别无限占着 runner
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -74,6 +76,20 @@ jobs:
         shell: bash
         run: ls -lh release
 
+      # 用 tag 注释作为 Release 正文：tag 消息里写的是“这版给了使用者什么”，
+      # 比 generate_release_notes 生成的东西更可读——首次发布没有上个 tag 时，
+      # 自动生成的结果只有一行 Full Changelog 链接。
+      - name: 生成发布说明
+        shell: bash
+        run: |
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "OpenMexia ${GITHUB_REF_NAME#v}" > release-notes.md
+          fi
+          echo "---------------- release notes ----------------"
+          cat release-notes.md
+          echo "-----------------------------------------------"
+
       # 先存一份 job artifact：Release 那步失败时产物不至于丢失，方便下载排查。
       # 只传安装包相关文件——release/ 下的 win-unpacked 是几百 MB 的中间目录，
       # 全部上传会白占带宽和配额。
@@ -91,7 +107,7 @@ jobs:
         with:
           name: OpenMexia ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
+          body_path: release-notes.md
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             release/*.exe
