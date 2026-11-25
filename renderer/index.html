@@ -126,6 +126,18 @@
         <span class="mi-label">隐藏的设备</span>
         <span class="mi-check"></span>
       </button>
+      <button class="menu-item" id="mi-lock" role="menuitem">
+        <span class="mi-icon">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2.5" y="4" width="19" height="12.5" rx="2" />
+            <path d="M9 20.5h6M12 16.5v4" />
+            <path d="M9.8 12v-2.2a2.2 2.2 0 0 1 4.4 0V12" />
+            <rect x="8.8" y="12" width="6.4" height="3.9" rx="1.1" />
+          </svg>
+        </span>
+        <span class="mi-label">锁屏联动</span>
+        <span class="mi-check"></span>
+      </button>
       <button class="menu-item" id="mi-room" role="menuitemcheckbox" aria-checked="false">
         <span class="mi-icon">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -310,6 +322,74 @@
         <div class="home-list" id="hidden-list"></div>
       </div>
     </div>
+
+    <!-- 锁屏联动：解锁 / 锁屏电脑时自动控制一组设备与米家自动化。
+         每个目标自带「启动时 / 解锁时 / 锁屏时」三个方向的动作，
+         因此一条事件可以同时做多件事（开灯 + 停用「无人关灯」）。 -->
+    <div id="lock-modal" class="pin-modal" hidden>
+      <div class="pin-card lock-card" role="dialog" aria-modal="true" aria-labelledby="lock-title">
+        <div class="pin-head">
+          <h2 id="lock-title">锁屏联动</h2>
+          <button id="lock-close" class="icon-btn" title="关闭" aria-label="关闭">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        </div>
+        <p class="lock-desc">
+          解锁 / 锁屏电脑时自动控制下面的目标：设备可打开或关闭，自动化可启用或停用。
+          需保持应用运行（可搭配「开机启动（托盘）」常驻）。
+        </p>
+
+        <div id="lock-body" class="lock-body">
+          <div class="lock-row">
+            <span class="lock-label">启用锁屏联动</span>
+            <button id="lock-enabled" class="switch" type="button" role="switch" aria-checked="false" aria-label="启用锁屏联动"></button>
+          </div>
+
+          <div id="lock-targets" class="lock-block">
+            <div class="lock-block-head">
+              <span>联动目标</span>
+              <button id="lock-add" class="lock-add" type="button">+ 添加</button>
+            </div>
+            <div id="lock-rows" class="lock-rows"></div>
+            <p id="lock-empty" class="lock-hint">还没有联动目标。点「+ 添加」选一台可开关的设备（灯/插座/风扇/空调），
+              或选一条米家自动化。</p>
+          </div>
+
+          <div class="lock-row">
+            <span class="lock-label">生效时间</span>
+            <button id="lock-time" class="switch" type="button" role="switch" aria-checked="false" aria-label="限定生效时间"></button>
+          </div>
+          <div id="lock-span" class="lock-field-row">
+            <input id="lock-time-start" class="lock-input lock-time" type="time" value="08:00" aria-label="生效时段起点" />
+            <span class="lock-arrow">→</span>
+            <input id="lock-time-end" class="lock-input lock-time" type="time" value="23:00" aria-label="生效时段终点" />
+          </div>
+          <p class="lock-hint">结束时刻为开区间；起 &gt; 止表示跨午夜（如 23:00–06:00 仅夜间生效），起 = 止视为全天。</p>
+
+          <div class="lock-row">
+            <span class="lock-label">生效网络</span>
+            <button id="lock-net" class="switch" type="button" role="switch" aria-checked="false" aria-label="限定生效网络"></button>
+          </div>
+          <div id="lock-netrow" class="lock-field-row">
+            <input id="lock-net-input" class="lock-input" type="text" placeholder="CMCC-Home, ChinaNet-8f3a" aria-label="生效网络名" />
+            <button id="lock-net-now" class="lock-add" type="button">当前</button>
+          </div>
+          <p class="lock-hint">多个名称用逗号分隔，命中其一即生效（大小写不敏感的包含匹配）。
+            仅 Windows 可判定当前网络名。</p>
+
+          <p id="lock-warn" class="lock-warn" hidden></p>
+        </div>
+
+        <div class="lock-foot">
+          <button id="lock-save" class="pin-btn" type="button">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 轻量提示条（联动结果：成功 / 失败 / 跳过 / 一次性引导） -->
+    <div id="toasts" class="toasts" aria-live="polite"></div>
 
     <!-- 独立弹窗（登录 / 关于）打开时显示黑色半透明遮罩；弹窗本体在独立窗口里 -->
     <div id="modal-backdrop" class="modal-backdrop" hidden></div>

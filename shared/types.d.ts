@@ -70,6 +70,13 @@ export interface Device {
   roomName: string;
   online: boolean;
   on: boolean;
+  /**
+   * 是否可开关：由 miot-spec 里是否存在 on 属性决定。
+   * 设备品类（type）只是按规格猜的近似标签——空调常被推测成 other、摄像机被当成
+   * plug——所以「能不能开/关」必须看这个字段，不能只看 type。
+   * 缺省（老数据 / 演示源）为 undefined，调用方回退到品类判断。
+   */
+  switchable?: boolean;
   /** 多键开关的附加按键（单键设备为空数组），每个按键独立开关 */
   extraSwitches: ExtraSwitch[];
 
@@ -238,3 +245,73 @@ export interface UpdateResult {
   url?: string;
   [k: string]: unknown;
 }
+
+/* ---------------- 锁屏联动 ---------------- */
+
+/**
+ * 单个触发方向上的动作。
+ *   on   → 设备打开 / 自动化启用
+ *   off  → 设备关闭 / 自动化停用
+ *   none → 该方向不动作
+ */
+export type LockAction = 'on' | 'off' | 'none';
+
+/** 联动目标类型：device 设备；automation 米家自动化（云端总开关） */
+export type LockTargetKind = 'device' | 'automation';
+
+/**
+ * 一个联动目标：设备或自动化，各自持有三个方向的动作。
+ *
+ * homeId 只有 automation 需要（拨开关的请求要带家庭），设备留空。
+ * name 只用于提示文案，云端改名后下次打开设置页会按 id 重新取到新名字。
+ */
+export interface LockTarget {
+  kind: LockTargetKind;
+  id: string;
+  name: string;
+  homeId: string;
+  startup: LockAction;
+  unlock: LockAction;
+  lock: LockAction;
+}
+
+/** 锁屏联动配置（store 层已收敛，字段必齐全） */
+export interface LockConfig {
+  /** 总开关：关闭时不响应任何会话事件 */
+  enabled: boolean;
+  targets: LockTarget[];
+  /** 生效时间段（每日，支持跨午夜）；关闭 = 不限制时段 */
+  timeEnabled: boolean;
+  /** HH:MM（含） */
+  timeStart: string;
+  /** HH:MM（不含）；起 > 止 = 跨午夜 */
+  timeEnd: string;
+  /** 生效网络（Wi-Fi 名 / 以太网名，包含匹配）；关闭或名单为空 = 不限制 */
+  netEnabled: boolean;
+  netNames: string[];
+}
+
+/** 设置面板拉到的一份联动配置 + 能力标记 */
+export interface LockConfigPayload {
+  config: LockConfig;
+  /** 当前平台是否支持锁屏事件监听（Web 版为 false） */
+  supported: boolean;
+  /** 是否已接入米家自动化控制（决定「目标」下拉里有没有自动化） */
+  automation: boolean;
+}
+
+/** 米家自动化（智能）条目 */
+export interface AutomationItem {
+  id: string;
+  name: string;
+  homeId: string;
+  enabled: boolean;
+}
+
+/** 主进程推给渲染层的联动结果提示（合成一条，避免刷屏） */
+export interface LockNotice {
+  /** applied 成功 / failed 失败 / skipped 条件未满足 / hint 一次性引导 */
+  kind: 'applied' | 'failed' | 'skipped' | 'hint';
+  text: string;
+}
+

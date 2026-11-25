@@ -988,6 +988,76 @@ class MijiaLogin {
     return this._cloudCall((api) => api.runAction(param));
   }
 
+  // ---------- 米家自动化（智能） ----------
+
+  /**
+   * AppSceneService 的通用通道。
+   *
+   * @zythum02/mijia-api 只封装了「手动场景」的列表与执行（getScenesList /
+   * runScene），**自动化（智能）的列表与启停没有对应方法**——它把
+   * GetSimpleSceneList 返回里同级的 auto_scene_info_list 直接丢掉了。
+   * 这里直接打同一个服务补上：三个必需参数（app_version / home_id /
+   * owner_uid）在所有场景接口上完全一样，集中在这里补。
+   */
+  private async _sceneRequest(
+    api: any, uri: string, homeId: string, payload: Record<string, unknown> = {},
+  ): Promise<any> {
+    // owner_uid 是所有场景接口的必需参数；库里的 _getHomeOwner 未导出，
+    // 只能按内部方法调用（返回该家庭的 uid，用于校验操作者身份）
+    const owner = await api._getHomeOwner(String(homeId));
+    return api.request(
+      `/appgateway/miot/appsceneservice/AppSceneService/${uri}`,
+      { app_version: 12, home_id: String(homeId), owner_uid: owner, ...payload },
+    );
+  }
+
+  /**
+   * 拉取全部家庭的米家自动化列表。
+   *
+   * 返回项的 enabled 是云端总开关（米家 APP 里自动化卡片上的那个开关），
+   * 与「锁屏联动」里的 automation 目标一一对应：锁屏时停用一条自动化、
+   * 解锁时再启用，就能做出「人在才联动」这类组合。
+   */
+  async getAutomations(): Promise<{ id: string; name: string; homeId: string; enabled: boolean }[]> {
+    const homes = await this.getHomes();
+    if (!homes.length) return [];
+    return this._cloudCall(async (api) => {
+      const out: { id: string; name: string; homeId: string; enabled: boolean }[] = [];
+      for (const home of homes) {
+        let res: any = null;
+        try {
+          res = await this._sceneRequest(api, 'GetSimpleSceneList', home.id, { get_type: 2 });
+        } catch {
+          continue;   // 单个家庭拉取失败不影响其它家庭
+        }
+        for (const raw of (res && res.auto_scene_info_list) || []) {
+          const id = String(raw.scene_id ?? raw.sceneId ?? '');
+          if (!id) continue;
+          out.push({
+            id,
+            name: String(raw.name || '未命名自动化'),
+            homeId: String(raw.home_id ?? home.id),
+            enabled: raw.enable === true,
+          });
+        }
+      }
+      return out;
+    });
+  }
+
+  /**
+   * 拨动米家自动化的云端总开关。
+   *
+   * enable 必须是 JSON 布尔：服务端按 Go 的 bool 解析，传 1/0 会直接
+   * 报 "cannot unmarshal number into Go value of type bool"。
+   */
+  async setAutomationEnabled(homeId: string, sceneId: string, enable: boolean): Promise<void> {
+    if (!homeId) throw new Error('自动化缺少家庭归属');
+    const ok = await this._cloudCall((api) =>
+      this._sceneRequest(api, 'SetSceneStatus', homeId, { scene_id: sceneId, enable: !!enable }));
+    if (!ok) throw new Error('云端未确认');
+  }
+
   // ---------- 登出 ----------
 
   async logout(): Promise<{ ok: boolean }> {

@@ -87,4 +87,11 @@ contextBridge.exposeInMainWorld('mijia', {
   onQR: (cb) => ipcRenderer.on('widget:qr', (_e, info) => cb(info)),
   // 登录状态变化（登录成功 / 登出 / 刷新）
   onLoginState: (cb) => ipcRenderer.on('widget:login-state', (_e, state) => cb(state)),
+
+  // ---- 锁屏联动 ----
+  getLockConfig: () => ipcRenderer.invoke('widget:get-lock-config'),
+  setLockConfig: (config) => ipcRenderer.invoke('widget:set-lock-config', config),
+  getAutomations: () => ipcRenderer.invoke('widget:get-automations'),
+  getNetworks: () => ipcRenderer.invoke('widget:get-networks'),
+  onLockNotice: (cb) => ipcRenderer.on('widget:lock-notice', (_e, notice) => cb(notice)),
 } satisfies IpcApi);

@@ -122,7 +122,7 @@
     // Web 版没有窗口 / 托盘 / 副屏这些概念，把这些桌面专属菜单项从渲染出的菜单里去掉
     const DESKTOP_ONLY = [
       'mi-top', 'mi-pin', 'mi-login', 'mi-login-tray',
-      'mi-mode', 'mi-reset', 'mi-fs-cover', 'mi-hide', 'mi-quit',
+      'mi-mode', 'mi-reset', 'mi-fs-cover', 'mi-hide', 'mi-quit', 'mi-lock',
     ];
     for (const key of DESKTOP_ONLY) el.querySelector(`[data-menu-key="${key}"]`)?.remove();
     // 删完后若末尾只剩分隔线，一并去掉
@@ -306,6 +306,25 @@
     onOpenPanel: (cb: Cb) => on('open-panel', cb),
     onToggleTheme: (cb: Cb) => on('toggle-theme', cb),
     onTitlebarMenu: (cb: Cb) => on('titlebar-menu', cb),
+
+    // 锁屏联动是桌面专属能力：浏览器里没有「会话锁屏」这个概念（关掉标签页
+    // 不等于锁屏）。这里如实返回 supported:false，面板会置灰并说明原因，
+    // 而不是假装保存成功。
+    getLockConfig: () => Promise.resolve({
+      supported: false,
+      automation: false,
+      config: {
+        enabled: false, targets: [],
+        timeEnabled: false, timeStart: '08:00', timeEnd: '23:00',
+        netEnabled: false, netNames: [],
+      },
+    }),
+    setLockConfig: (config: any) => Promise.resolve({
+      supported: false, automation: false, config,
+    }),
+    getAutomations: () => Promise.resolve({ automations: [] }),
+    getNetworks: () => Promise.resolve({ names: null }),
+    onLockNotice: () => {},
 
     // 弹出菜单
     openMenu: (payload: any) => {

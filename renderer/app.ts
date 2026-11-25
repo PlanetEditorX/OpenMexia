@@ -2465,6 +2465,7 @@ window.mijia.onOpenPanel((name) => {
   if (name === 'login') window.mijia.openDialog('login');
   else if (name === 'home') openHomeModal(true);
   else if (name === 'hidden') openHiddenModal(true);
+  else if (name === 'lock') openLockModal(true);
   else if (name === 'about') window.mijia.openDialog('about');
 });
 
@@ -2649,6 +2650,406 @@ document.getElementById('mi-hidden').addEventListener('click', () => openHiddenM
 document.getElementById('hidden-close').addEventListener('click', () => openHiddenModal(false));
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !hiddenModal.hidden) openHiddenModal(false); });
 
+/* ---------------- 锁屏联动 面板 ---------------- */
+
+// 解锁 / 锁屏电脑时自动控制一组目标：设备（开 / 关）与米家自动化（启用 / 停用）。
+// 每个目标自带三个方向的动作，所以一条事件可以同时做多件事。
+// 配置由主进程持有并落盘（widget-state.json），这里只做编辑与保存；
+// 会话事件也在主进程接收，应用最小化到托盘 / 窗口不可见时联动照样生效。
+
+const lockModal = document.getElementById('lock-modal');
+const lockBody = document.getElementById('lock-body');
+const lockEnabledSw = document.getElementById('lock-enabled');
+const lockTimeSw = document.getElementById('lock-time');
+const lockNetSw = document.getElementById('lock-net');
+const lockRowsEl = document.getElementById('lock-rows');
+const lockEmptyEl = document.getElementById('lock-empty');
+const lockTimeStart = document.getElementById('lock-time-start');
+const lockTimeEnd = document.getElementById('lock-time-end');
+const lockNetInput = document.getElementById('lock-net-input');
+const lockNetNow = document.getElementById('lock-net-now');
+const lockAddBtn = document.getElementById('lock-add');
+const lockSaveBtn = document.getElementById('lock-save');
+const lockWarnEl = document.getElementById('lock-warn');
+
+// 动作下拉的文案随目标类型切换，但选项顺序固定为 on/off/none，
+// 所以换目标类型不会把已选状态打乱。
+const LOCK_ACTION_ORDER = ['on', 'off', 'none'];
+const LOCK_ACTION_TEXT = {
+  device: { on: '打开', off: '关闭', none: '不操作' },
+  automation: { on: '启用', off: '停用', none: '不操作' },
+};
+// 新目标默认沿用最经典的用法：解锁打开、锁屏关闭、启动时不操作
+const LOCK_DEFAULT_ACTIONS = { startup: 'none', unlock: 'on', lock: 'off' };
+
+let lockConfig = null;      // 面板里的配置草稿（保存成功后被主进程返回值覆盖）
+let lockSupported = true;   // 当前环境是否支持锁屏事件（Web 版为 false）
+let lockOptions = [];       // 候选目标 [{kind,id,name,homeId,label}]
+// 与主进程 applyPower 的可控品类保持一致：只有这几种设备存在「开/关」语义
+const LOCK_SWITCHABLE_TYPES = ['plug', 'light', 'fan', 'aircon', 'purifier'];
+let lockRows = [];          // 目标行 [{el, sel, actions, data}]
+
+function lockSwitchSet(el, on) {
+  el.classList.toggle('on', !!on);
+  el.setAttribute('aria-checked', String(!!on));
+}
+
+function lockSwitchGet(el) {
+  return el.classList.contains('on');
+}
+
+// 总开关 / 两个子开关只影响可交互性，不改动已填的内容：
+// 关掉总开关时用户配好的目标还在，重新打开即可继续用。
+function lockSyncEnabledUI() {
+  const on = lockSwitchGet(lockEnabledSw);
+  const timeOn = lockSwitchGet(lockTimeSw) && on;
+  const netOn = lockSwitchGet(lockNetSw) && on;
+  lockBody.classList.toggle('off', !on);
+  lockTimeStart.disabled = !timeOn;
+  lockTimeEnd.disabled = !timeOn;
+  lockNetInput.disabled = !netOn;
+  lockNetNow.disabled = !netOn;
+}
+
+function lockKeyOf(data) {
+  return data && data.kind && data.id ? `${data.kind}:${data.id}` : '';
+}
+
+// 按最长名称撑开动作下拉所在列的可读性：目标下拉吃满剩余宽度即可，动作列固定等分
+function lockRenderEmptyState() {
+  lockEmptyEl.hidden = lockRows.length > 0;
+}
+
+// 其它行已选的目标不进本行的候选（同一目标配两遍没有意义，也容易误改）
+function lockFillTargets(row) {
+  const taken = new Set();
+  for (const other of lockRows) {
+    if (other === row) continue;
+    const key = lockKeyOf(other.data);
+    if (key) taken.add(key);
+  }
+  const keep = lockKeyOf(row.data);
+  row.sel.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = '选择目标…';
+  row.sel.append(placeholder);
+  for (const opt of lockOptions) {
+    const key = `${opt.kind}:${opt.id}`;
+    if (taken.has(key)) continue;
+    const el = document.createElement('option');
+    el.value = key;
+    el.textContent = opt.label;
+    row.sel.append(el);
+  }
+  // 已配置的目标若不在当前候选里（设备被移除、自动化这次没拉到），仍然作为
+  // 一个「未在列表」的选项摆出来——否则用户只是打开面板点了保存，这条配置
+  // 就被静默抹掉了。
+  if (keep && !lockOptions.some((opt) => `${opt.kind}:${opt.id}` === keep)) {
+    const el = document.createElement('option');
+    el.value = keep;
+    el.textContent = `${row.data.name || row.data.id}（未在列表）`;
+    row.sel.append(el);
+  }
+  row.sel.value = keep;
+}
+
+// 按目标类型重写三个动作下拉的文案，尽量保留原选择
+function lockFillActions(row) {
+  const kind = row.data.kind === 'automation' ? 'automation' : 'device';
+  const texts = LOCK_ACTION_TEXT[kind];
+  for (const event of ['startup', 'unlock', 'lock']) {
+    const sel = row.actions[event];
+    const keep = row.data[event] || LOCK_DEFAULT_ACTIONS[event];
+    sel.innerHTML = '';
+    for (const action of LOCK_ACTION_ORDER) {
+      const el = document.createElement('option');
+      el.value = action;
+      el.textContent = texts[action];
+      sel.append(el);
+    }
+    sel.value = LOCK_ACTION_ORDER.includes(keep) ? keep : 'none';
+  }
+  const hasTarget = !!lockKeyOf(row.data);
+  for (const event of ['startup', 'unlock', 'lock']) {
+    row.actions[event].disabled = !hasTarget;
+  }
+}
+
+function lockRefreshRows() {
+  for (const row of lockRows) {
+    lockFillTargets(row);
+    lockFillActions(row);
+  }
+  lockRenderEmptyState();
+}
+
+function lockAddRow(data) {
+  const target = data || { kind: '', id: '', name: '', homeId: '', ...LOCK_DEFAULT_ACTIONS };
+  const row = { el: null, sel: null, actions: {}, data: target };
+
+  const el = h('div', 'lock-target');
+  const head = h('div', 'lock-target-head');
+  const sel = h('select', 'lock-select');
+  sel.setAttribute('aria-label', '联动目标');
+  const del = h('button', 'lock-del', '×');
+  del.type = 'button';
+  del.title = '移除这个目标';
+  del.addEventListener('click', () => {
+    lockRows = lockRows.filter((item) => item !== row);
+    el.remove();
+    lockRefreshRows();
+  });
+  head.append(sel, del);
+
+  const actions = h('div', 'lock-actions');
+  for (const [event, label] of [['startup', '启动时'], ['unlock', '解锁时'], ['lock', '锁屏时']]) {
+    const wrap = document.createElement('label');
+    wrap.append(document.createTextNode(label));
+    const actionSel = h('select', 'lock-select');
+    actionSel.setAttribute('aria-label', label);
+    wrap.append(actionSel);
+    actions.append(wrap);
+    row.actions[event] = actionSel;
+  }
+
+  sel.addEventListener('change', () => {
+    const value = sel.value;
+    const sep = value.indexOf(':');
+    if (sep < 0) {
+      row.data = { kind: '', id: '', name: '', homeId: '', ...LOCK_DEFAULT_ACTIONS };
+    } else {
+      const kind = value.slice(0, sep);
+      const id = value.slice(sep + 1);
+      const hit = lockOptions.find((opt) => opt.kind === kind && opt.id === id);
+      row.data = {
+        kind,
+        id,
+        name: hit ? hit.name : '',
+        homeId: hit ? hit.homeId : '',
+        startup: row.data.startup || LOCK_DEFAULT_ACTIONS.startup,
+        unlock: row.data.unlock || LOCK_DEFAULT_ACTIONS.unlock,
+        lock: row.data.lock || LOCK_DEFAULT_ACTIONS.lock,
+      };
+    }
+    lockFillActions(row);
+    lockRefreshRows();   // 其它行的候选集要跟着变
+  });
+
+  el.append(head, actions);
+  row.el = el;
+  row.sel = sel;
+  lockRows.push(row);
+  lockRowsEl.append(el);
+  return row;
+}
+
+function lockApplyConfigIntoPanel(cfg) {
+  lockSwitchSet(lockEnabledSw, cfg.enabled);
+  lockSwitchSet(lockTimeSw, cfg.timeEnabled);
+  lockSwitchSet(lockNetSw, cfg.netEnabled);
+  lockTimeStart.value = cfg.timeStart || '08:00';
+  lockTimeEnd.value = cfg.timeEnd || '23:00';
+  lockNetInput.value = (cfg.netNames || []).join(', ');
+  lockRowsEl.innerHTML = '';
+  lockRows = [];
+  for (const target of cfg.targets || []) lockAddRow(target);
+  lockRefreshRows();
+  lockSyncEnabledUI();
+}
+
+function lockShowWarn(text) {
+  if (!text) { lockWarnEl.hidden = true; lockWarnEl.textContent = ''; return; }
+  lockWarnEl.hidden = false;
+  lockWarnEl.textContent = text;
+}
+
+async function openLockModal(open) {
+  lockModal.hidden = !open;
+  if (!open) return;
+  lockShowWarn('');
+  lockSaveBtn.disabled = true;
+  // 配置与自动化列表都要走一次 IPC（自动化还要打云端），先给一行占位文案，
+  // 避免空白面板被误读成「没有目标」
+  lockRowsEl.innerHTML = '';
+  lockRows = [];
+  lockEmptyEl.hidden = false;
+  lockEmptyEl.textContent = '正在读取联动配置…';
+  try {
+    const payload = await window.mijia.getLockConfig();
+    lockSupported = !!(payload && payload.supported);
+    lockConfig = (payload && payload.config) || null;
+    // 候选目标：设备在前（在线优先），自动化在后（按名称）。
+    // 自动化列表要打云端，失败（未登录 / 离线）不阻塞面板——只是没有自动化可选。
+    let automations = [];
+    if (payload && payload.automation) {
+      try {
+        const res = await window.mijia.getAutomations();
+        automations = (res && res.automations) || [];
+      } catch { automations = []; }
+    }
+    lockOptions = [];
+    // 只列真正能开/关的设备：传感器、网关这类没有 on 属性，选进来执行必然报错。
+    // 判断依据是设备自带的 switchable（规格里有 on 属性），而不是品类——品类是按
+    // 规格猜的，空调常被猜成 other、摄像机被猜成 plug，按品类筛会漏掉能控的、
+    // 又放进来不能控的。老数据没有该字段时回退到品类白名单。
+    const canPower = (d) => (typeof d.switchable === 'boolean'
+      ? d.switchable
+      : LOCK_SWITCHABLE_TYPES.includes(d.type));
+    const devices = [...allDevices]
+      .filter(canPower)
+      .sort((a, b) => {
+        if (!!a.online !== !!b.online) return a.online ? -1 : 1;
+        return String(a.name || '').localeCompare(String(b.name || ''));
+      });
+    for (const d of devices) {
+      const name = d.name || d.id;
+      lockOptions.push({
+        kind: 'device', id: String(d.id), name, homeId: '',
+        label: d.roomName ? `${name}（${d.roomName}）` : name,
+      });
+    }
+    for (const a of automations) {
+      lockOptions.push({
+        kind: 'automation', id: String(a.id), name: a.name, homeId: a.homeId || '',
+        label: `自动化·${a.name}`,
+      });
+    }
+    if (lockConfig) lockApplyConfigIntoPanel(lockConfig);
+    if (!lockSupported) {
+      lockShowWarn('当前环境不支持锁屏联动（需要在桌面版运行）');
+    } else if (!allDevices.length) {
+      lockShowWarn('尚未登录米家或没有设备：先登录后才能选择联动目标');
+    } else if (!devices.length && !automations.length) {
+      lockShowWarn('当前家庭没有可开关的设备，也没有米家自动化可供联动');
+    }
+    lockSaveBtn.disabled = !lockSupported || !lockConfig;
+  } catch (e) {
+    lockShowWarn(readableError(e));
+    lockSaveBtn.disabled = true;
+  }
+}
+
+function closeLockModal() {
+  lockModal.hidden = true;
+}
+
+lockEnabledSw.addEventListener('click', () => {
+  lockSwitchSet(lockEnabledSw, !lockSwitchGet(lockEnabledSw));
+  lockSyncEnabledUI();
+});
+
+lockTimeSw.addEventListener('click', () => {
+  lockSwitchSet(lockTimeSw, !lockSwitchGet(lockTimeSw));
+  lockSyncEnabledUI();
+});
+
+lockNetSw.addEventListener('click', () => {
+  lockSwitchSet(lockNetSw, !lockSwitchGet(lockNetSw));
+  lockSyncEnabledUI();
+});
+
+lockAddBtn.addEventListener('click', () => {
+  const row = lockAddRow(null);
+  lockRefreshRows();
+  row.el.scrollIntoView({ block: 'nearest' });
+});
+
+// 「当前」：把本机当前网络名填进输入框（查询失败说明原因，不静默）
+lockNetNow.addEventListener('click', async () => {
+  lockNetNow.disabled = true;
+  try {
+    const res = await window.mijia.getNetworks();
+    const names = (res && res.names) || null;
+    if (!names || !names.length) {
+      lockShowWarn('未能读取当前网络名（仅 Windows 支持，且需已连接网络）');
+      return;
+    }
+    const existing = lockNetInput.value.split(/[,;，；\n]/).map((s) => s.trim()).filter(Boolean);
+    for (const name of names) if (!existing.includes(name)) existing.push(name);
+    lockNetInput.value = existing.join(', ');
+    lockShowWarn('');
+  } catch (e) {
+    lockShowWarn(readableError(e));
+  } finally {
+    lockNetNow.disabled = !lockSwitchGet(lockNetSw);
+  }
+});
+
+lockSaveBtn.addEventListener('click', async () => {
+  if (!lockConfig) return;
+  const targets = [];
+  for (const row of lockRows) {
+    const key = lockKeyOf(row.data);
+    if (!key) continue;      // 未选目标的空行直接丢掉
+    targets.push({
+      kind: row.data.kind,
+      id: row.data.id,
+      name: row.data.name,
+      homeId: row.data.homeId || '',
+      startup: row.actions.startup.value,
+      unlock: row.actions.unlock.value,
+      lock: row.actions.lock.value,
+    });
+  }
+  lockSaveBtn.disabled = true;
+  try {
+    const res = await window.mijia.setLockConfig({
+      enabled: lockSwitchGet(lockEnabledSw),
+      targets,
+      timeEnabled: lockSwitchGet(lockTimeSw),
+      timeStart: lockTimeStart.value || '08:00',
+      timeEnd: lockTimeEnd.value || '23:00',
+      netEnabled: lockSwitchGet(lockNetSw),
+      netNames: lockNetInput.value,
+    });
+    lockConfig = (res && res.config) || lockConfig;
+    lockShowWarn('');
+    closeLockModal();
+    showToast(lockSwitchGet(lockEnabledSw) ? '锁屏联动已保存并生效' : '锁屏联动已保存（当前为关闭）');
+  } catch (e) {
+    lockShowWarn(readableError(e));
+  } finally {
+    lockSaveBtn.disabled = !lockSupported;
+  }
+});
+
+document.getElementById('mi-lock').addEventListener('click', () => openLockModal(true));
+document.getElementById('lock-close').addEventListener('click', closeLockModal);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !lockModal.hidden) closeLockModal();
+});
+// 点卡片外的遮罩关闭（与设备面板的交互习惯一致）
+lockModal.addEventListener('pointerdown', (e) => {
+  if (e.target === lockModal) closeLockModal();
+});
+
+// 主进程推来的联动结果（成功 / 失败 / 跳过 / 一次性引导）→ 轻量提示条。
+// 这里必须尽早注册：启动时的「启动时动作失败」「未配置引导」可能紧随 init 到达。
+window.mijia.onLockNotice((notice) => {
+  if (!notice || !notice.text) return;
+  const ms = notice.kind === 'failed' ? 6000 : notice.kind === 'hint' ? 9000 : 4000;
+  showToast(notice.text, notice.kind, ms);
+});
+
+/* ---------------- 轻量提示条 ---------------- */
+
+const toastsEl = document.getElementById('toasts');
+
+function showToast(text, kind, ms) {
+  if (!toastsEl || !text) return;
+  const el = h('div', 'toast' + (kind ? ' ' + kind : ''));
+  el.textContent = text;
+  toastsEl.append(el);
+  // 最多同时三条：锁屏 / 解锁连发时别把界面铺满
+  while (toastsEl.children.length > 3) toastsEl.firstElementChild.remove();
+  const life = ms || 4000;
+  setTimeout(() => {
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 220);
+  }, life);
+}
+
 /* ---------------- 独立弹窗（登录 / 关于） ---------------- */
 
 // 登录 / 关于已迁到独立窗口（renderer/dialog.html + dialog.ts），不受主窗口尺寸约束。
@@ -2714,6 +3115,7 @@ function sendTrayIcons() {
     top: 'mi-top', pin: 'mi-pin', login: 'mi-login',
     cloud: 'mi-cloud', home: 'mi-home', hidden: 'mi-hidden', theme: 'mi-theme',
     mode: 'mi-mode', room: 'mi-room', roomname: 'mi-roomname',
+    lock: 'mi-lock',
     reset: 'mi-reset', hide: 'mi-hide', quit: 'mi-quit',
     fs: 'mi-fs', 'fs-cover': 'mi-fs-cover',
     about: 'mi-about',

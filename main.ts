@@ -7,8 +7,12 @@ import { startLocalApi } from './src/local-api';
 import type { LocalApiHandle } from './src/local-api';
 import { MijiaLogin } from './src/mijia-login';
 import * as QRCode from 'qrcode';
-import type { FullscreenMode, Settings, Theme, WindowMode } from './shared/types';
+import type { FullscreenMode, LockConfig, LockNotice, Settings, Theme, WindowMode } from './shared/types';
 import type { MenuPlace, OpenMenuPayload, PopupMenuData, DialogKind, DialogData } from './shared/ipc';
+import { SessionWatch } from './src/session-watch';
+import { LockAutomation } from './src/lock-automation';
+import { normalizeLockConfig } from './src/lock-config';
+import { currentNetworkNames } from './src/lock-conditions';
 
 // Electron 未内置「退出标记」这个应用私有属性，这里给 App 补上类型
 declare global {
@@ -53,6 +57,9 @@ let roomState = { groupByRoom: false, showRoomName: true };
 // 全屏模式：null 未全屏；'normal' 铺满当前屏工作区（任务栏可见）；'cover' 铺满整屏并置顶（盖住任务栏）
 let fsMode: FullscreenMode = null;
 let fsSavedBounds: Electron.Rectangle | null = null;   // 进入全屏前的窗口矩形，退出全屏时还原
+// 锁屏联动：会话锁屏 / 解锁监听 + 按配置控制设备与自动化（见 src/lock-automation.ts）
+let lockWatch: SessionWatch | null = null;
+let lockAuto: LockAutomation | null = null;
 
 // 登录相关数据目录：userData/mijia（devices.json + cloud/auth.json）
 const mijiaDataDir = (): string => path.join(app.getPath('userData'), 'mijia');
@@ -919,6 +926,108 @@ async function broadcastLoginState() {
   } catch { /* ignore */ }
 }
 
+/* ---------------- 锁屏联动 ---------------- */
+
+// 联动结果提示的待发队列：启动早期（窗口还在加载）产生的提示不能丢——
+// 「启动时动作失败」「未配置引导」都发生在渲染层还没就绪的时刻。
+const pendingLockNotices: LockNotice[] = [];
+
+/** 读锁屏联动配置（每次事件现读，设置保存后立即生效，无需重启） */
+function lockConfig(): LockConfig {
+  return normalizeLockConfig(loadState().lockAutomation);
+}
+
+/** 收敛并落盘锁屏联动配置（widget-state.json 的 lockAutomation 键） */
+function saveLockConfig(raw: unknown): LockConfig {
+  const cfg = normalizeLockConfig(raw);
+  patchState({ lockAutomation: cfg });
+  return cfg;
+}
+
+/** 把联动结果推给渲染层（成功 / 失败 / 跳过 / 一次性引导）；渲染层合成一条 toast */
+function sendLockNotice(notice: LockNotice): void {
+  if (!win || win.isDestroyed()) return;
+  if (win.webContents.isLoading()) { pendingLockNotices.push(notice); return; }
+  win.webContents.send('widget:lock-notice', notice);
+}
+
+function flushLockNotices(): void {
+  if (!win || win.isDestroyed() || win.webContents.isLoading()) return;
+  while (pendingLockNotices.length) {
+    win.webContents.send('widget:lock-notice', pendingLockNotices.shift());
+  }
+}
+
+/**
+ * 设备源就绪后启动锁屏联动。
+ *
+ * 三件事：①起会话监听（powerMonitor 事件 + LogonUI 兜底轮询）；
+ * ②主动跑一次「启动时」动作——开机自启的场景里没有解锁事件可等
+ * （开机本来就不算解锁），只能由这里执行，否则灯要等用户手动锁屏
+ * 再解锁才亮；③首次未配置时引导一次。
+ *
+ * 未配置时不会产生任何控制，仅常驻一个 10 秒轮询；配置在每次事件时
+ * 现读，设置面板保存后立即生效。
+ */
+function startLockAutomation(): void {
+  if (lockWatch) return;
+  lockWatch = new SessionWatch();
+  lockAuto = new LockAutomation({
+    getConfig: lockConfig,
+    getProvider: () => (provider as any) || null,
+    // 有真实设备清单才算「已登录」：演示源下控制没有意义，也没有云端凭据
+    isLoggedIn: async () => {
+      try {
+        const st = await login.status();
+        return !!st.hasDevices && st.deviceCount > 0;
+      } catch {
+        return false;
+      }
+    },
+    // 米家自动化的云端总开关（AppSceneService / SetSceneStatus）
+    automation: {
+      setEnabled: (target, enable) =>
+        login.setAutomationEnabled(target.homeId, target.id, enable),
+    },
+  });
+  lockAuto.on('applied', (items) => {
+    // 一条事件可能动了多个目标：合成一条提示，别刷屏
+    const parts = items.map(({ kind, name, on }) => {
+      const verb = kind === 'automation' ? (on ? '启用' : '停用') : (on ? '打开' : '关闭');
+      return `已${verb}「${name}」`;
+    });
+    const shown = parts.slice(0, 3).join('、')
+      + (parts.length > 3 ? ` 等 ${parts.length} 项` : '');
+    sendLockNotice({ kind: 'applied', text: `锁屏联动：${shown}` });
+  });
+  lockAuto.on('failed', (msg) => {
+    sendLockNotice({ kind: 'failed', text: `锁屏联动执行失败：${msg}` });
+  });
+  lockAuto.on('skipped', (msg) => {
+    sendLockNotice({ kind: 'skipped', text: `锁屏联动已跳过：${msg}` });
+  });
+  lockWatch.on('lock', () => lockAuto?.handleLock());
+  lockWatch.on('unlock', () => lockAuto?.handleUnlock());
+  lockWatch.start();
+  lockAuto.runStartup();
+  maybeHintLockAutomation();
+}
+
+/**
+ * 功能默认关闭且藏在菜单里，用户容易以为「装了就会生效」。
+ * 登录后若检测到从未配置过，引导一次（一次性，不重复打扰）。
+ */
+function maybeHintLockAutomation(): void {
+  const state = loadState();
+  if (lockConfig().enabled || state.lockAutomationHinted === true) return;
+  patchState({ lockAutomationHinted: true });
+  sendLockNotice({
+    kind: 'hint',
+    text: '新功能「锁屏联动」未开启：解锁电脑自动开灯、锁屏自动关灯，'
+      + '还能同时启停米家自动化，可在菜单 → 锁屏联动 中配置',
+  });
+}
+
 /* ---------------- 托盘 ---------------- */
 
 function buildTrayMenu(): Electron.Menu {
@@ -962,6 +1071,11 @@ function buildTrayMenu(): Electron.Menu {
       label: '隐藏的设备',
       ...icon('hidden'),
       click: () => openPanel('hidden'),
+    },
+    {
+      label: '锁屏联动',
+      ...icon('lock'),
+      click: () => openPanel('lock'),
     },
     {
       // 状态在渲染层（localStorage），点击后发消息让它切换；勾选态由渲染层上报（roomState）
@@ -1041,6 +1155,8 @@ function createTray() {
 function registerIpc() {
   ipcMain.handle('widget:init', async () => {
     await providerReady;   // 等首次设备源构建完成（可能联网拉规格）
+    // 渲染层在 init 之前就注册好了提示监听：把启动早期攒下的联动提示补发出去
+    flushLockNotices();
     return {
       devices: provider ? provider.snapshot() : [],
       settings,
@@ -1135,6 +1251,35 @@ function registerIpc() {
     await rebuildProvider();
     return { ok: true, currentHomeId: currentHomeId() };
   });
+
+  // ---- 锁屏联动 ----
+  // 读配置 + 能力标记（supported=false 时渲染层面板整体置灰，Web 版走这条）
+  ipcMain.handle('widget:get-lock-config', () => ({
+    config: lockConfig(),
+    supported: true,
+    automation: true,
+  }));
+
+  // 整体写入：收敛 → 落盘 → 返回实际生效值。执行链每次事件现读配置，
+  // 所以这里不需要额外「重载」动作
+  ipcMain.handle('widget:set-lock-config', (_e, config = {} as any) => ({
+    config: saveLockConfig(config),
+    supported: true,
+    automation: true,
+  }));
+
+  // 米家自动化列表：只在打开设置面板时拉一次，失败（未登录 / 离线）返回空数组
+  ipcMain.handle('widget:get-automations', async () => {
+    try {
+      return { automations: await login.getAutomations() };
+    } catch (e: any) {
+      console.warn('[main] 拉取米家自动化失败：', e && e.message);
+      return { automations: [] };
+    }
+  });
+
+  // 当前网络名（「生效网络」的「当前」按钮）：查询失败返回 null，由界面提示
+  ipcMain.handle('widget:get-networks', async () => ({ names: await currentNetworkNames() }));
 
   ipcMain.on('widget:set-power', (_e, { id, on }) => provider.setPower(id, on));
   ipcMain.on('widget:set-brightness', (_e, { id, value }) => provider.setBrightness(id, value));
@@ -1275,6 +1420,11 @@ if (!app.requestSingleInstanceLock()) {
     prepareMenuSpare();   // 预热弹出菜单窗口，首次弹出即零等待
     // 托盘只在小组件模式存在；窗口模式无托盘、窗口常驻任务栏
     if (windowMode() === 'widget') createTray();
+    // 锁屏联动：设备源就绪后起监听并跑一次「启动时」动作（不等窗口显示，
+    // 托盘常驻 / 自启隐藏启动时窗口可能根本不可见，联动仍应生效）
+    void providerReady.then(() => startLockAutomation()).catch((e) => {
+      console.error('[main] 启动锁屏联动失败：', e && e.message);
+    });
     // MoteDeck 联动：只监听本机回环，启动即写好 discovery 文件供对方读取
     localApi = startLocalApi({
       userDataDir: app.getPath('userData'),
@@ -1292,6 +1442,8 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', () => {
     app.isQuitting = true;
+    if (lockWatch) { lockWatch.stop(); lockWatch = null; }
+    if (lockAuto) { lockAuto.dispose(); lockAuto = null; }
     if (localApi) {
       localApi.close();
       localApi = null;

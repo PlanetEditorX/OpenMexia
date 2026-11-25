@@ -7,10 +7,14 @@
  */
 
 import type {
+  AutomationItem,
   Device,
   FullscreenMode,
   Home,
   InitPayload,
+  LockConfig,
+  LockConfigPayload,
+  LockNotice,
   LoginResponse,
   LoginState,
   QRInfo,
@@ -66,6 +70,11 @@ export type IpcChannel =
   | 'widget:get-homes'
   | 'widget:set-home'
   | 'widget:check-update'
+  // ---- 锁屏联动 ----
+  | 'widget:get-lock-config'
+  | 'widget:set-lock-config'
+  | 'widget:get-automations'
+  | 'widget:get-networks'
   // ---- 渲染层 → 主进程：send（无返回值） ----
   | 'widget:set-power'
   | 'widget:set-brightness'
@@ -105,6 +114,8 @@ export type IpcChannel =
   | 'widget:toggle-room'
   | 'widget:menu-action'
   | 'widget:menu-closed'
+  // ---- 主进程 → 渲染层：锁屏联动结果提示（合成一条 toast） ----
+  | 'widget:lock-notice'
   // ---- 主进程 → 主窗口：独立弹窗开/关（主窗口据此显示黑色遮罩） ----
   | 'widget:dialog-open'
   | 'widget:dialog-closed'
@@ -208,6 +219,18 @@ export interface IpcApi {
   setHome(homeId: string): Promise<{ ok: true; currentHomeId: string }>;
   onQR(cb: (info: QRInfo) => void): void;
   onLoginState(cb: (state: LoginState) => void): void;
+
+  // ---- 锁屏联动 ----
+  /** 读当前配置 + 能力标记（supported 为 false 时面板整体置灰） */
+  getLockConfig(): Promise<LockConfigPayload>;
+  /** 整体写入配置（主进程收敛后返回实际落盘值） */
+  setLockConfig(config: LockConfig): Promise<LockConfigPayload>;
+  /** 米家自动化列表（目标下拉用）；无云端会话时返回空数组 */
+  getAutomations(): Promise<{ automations: AutomationItem[] }>;
+  /** 当前已连接的网络名（「生效网络」的「当前」按钮用）；失败返回 null */
+  getNetworks(): Promise<{ names: string[] | null }>;
+  /** 主进程推送的联动结果（成功 / 失败 / 跳过 / 一次性引导） */
+  onLockNotice(cb: (notice: LockNotice) => void): void;
 }
 
 /** Provider 的公共接口（devices.js 的 MockProvider / MiioProvider 实现） */
@@ -224,4 +247,10 @@ export interface Provider {
   setSpeed(id: string, value: number): unknown;
   setField?(id: string, field: string, value: unknown): unknown;
   callAction?(id: string, key: string): unknown;
+  /**
+   * 严格模式开关：await 到真实结果，失败抛出可读错误（设备离线 / 不支持开关 /
+   * 云端拒绝）。界面上的开关仍走 setPower（即发即忘），只有「锁屏联动」这类
+   * 无人看屏幕的自动控制需要知道成败。
+   */
+  applyPower?(id: string, on: boolean): Promise<void>;
 }

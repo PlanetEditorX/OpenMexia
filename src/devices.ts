@@ -279,6 +279,16 @@ class MockProvider extends EventEmitter {
     this.emit('update', this.snapshot());
   }
 
+  /** 严格模式开关（锁屏联动用）：演示源同样要如实报告「设备不存在 / 不支持开关」 */
+  async applyPower(id: string, on: boolean): Promise<void> {
+    const d = this.devices.find((x) => x.id === id);
+    if (!d) throw new Error('设备不在当前清单中');
+    if (!['plug', 'light', 'fan', 'aircon', 'purifier'].includes(d.type)) {
+      throw new Error('设备不支持开关');
+    }
+    this.setPower(id, on);
+  }
+
   /** 通用字段写入（枚举/布尔/数值），用于空调/风扇/净饮机的多维调节 */
   setField(id: string, field: string, value: any) {
     const d = this.devices.find((x) => x.id === id);
@@ -439,6 +449,8 @@ class MiioProvider extends EventEmitter {
         // 用真实探测结果校正。清单里标为离线的设备先按离线展示，避免「离线却显示在线」。
         online: d.online !== false,
         on: false,
+        // 规格里带 on 属性才谈得上开/关；type 是猜测值，不能用来判断可控性
+        switchable: !!props['on'],
         // 多键开关的附加按键（双开右键 / 三开中键、右键），单键设备为空数组
         extraSwitches: switches.map((item) => ({ ...item, on: false })),
         brightness: 0,
@@ -714,11 +726,22 @@ class MiioProvider extends EventEmitter {
 
   /* ---------------- 读写底层 ---------------- */
 
-  async _write(b: Bind, field: string, value: any) {
+  /**
+   * 写一个属性，按「Yeelight 传统协议 → MIoT-spec 局域网 → 云端」逐级回退。
+   *
+   * opts.strict = true 时，三条通道**全部**失败会把最后一次错误抛出去
+   * （applyPower 这类需要知道成败的调用用）；按钮点击路径保持宽松语义——
+   * 失败静默，避免用户连点开关时弹一堆错误。
+   */
+  async _write(b: Bind, field: string, value: any, opts: { strict?: boolean } = {}) {
     const p = b.props[field];
-    if (!p) return;
+    if (!p) {
+      if (opts.strict) throw new Error(`设备不支持字段 ${field}`);
+      return;
+    }
     const dev = this._dev(b.id);
     const lan = this._lanUsable(b) && this._sameSubnet(b.ip);
+    let lastError: any = null;
 
     // 1) Yeelight 传统局域网协议（灯类：MIoT-spec 写在部分固件上必超时）
     if (lan && b.lanProto === 'yeelight') {
@@ -727,7 +750,7 @@ class MiioProvider extends EventEmitter {
         if (dev) { dev.online = true; this._setField(dev, field, value, b); }
         this.emit('update', this.snapshot());
         return;
-      } catch { /* 回退 MIoT-spec / 云端 */ }
+      } catch (e) { lastError = e; /* 回退 MIoT-spec / 云端 */ }
     }
 
     // 2) MIoT-spec 局域网直连（仅同网段；跨网段必然超时，直接走云端）
@@ -742,7 +765,7 @@ class MiioProvider extends EventEmitter {
         if (dev) { dev.online = true; this._setField(dev, field, value, b); }
         this.emit('update', this.snapshot());
         return;
-      } catch { /* 转云端 */ }
+      } catch (e) { lastError = e; /* 转云端 */ }
     }
 
     // 3) 云端回退
@@ -750,10 +773,28 @@ class MiioProvider extends EventEmitter {
       await this._cloudSet(b, { did: targetDid(b), siid: p.siid, piid: p.piid, value });
       if (dev) { dev.online = true; this._setField(dev, field, value, b); }
     } catch (e: any) {
+      lastError = e;
       // 与轮询一致：仅在云端「明确」判定离线时才置离线，避免写入偶发失败把在线设备误判为离线
       if (dev && e && e.deviceOffline) dev.online = false;
     }
     this.emit('update', this.snapshot());
+    if (opts.strict) {
+      throw new Error(friendlyWriteError(lastError, b, field));
+    }
+  }
+
+  /**
+   * 严格模式的开关写入：await 到真实结果，失败抛出可读错误。
+   *
+   * 供「锁屏联动」「启动时动作」这类**无人看屏幕**的自动控制使用：它们必须
+   * 能区分「真的关掉了」与「设备离线 / 云端拒绝」，才能给用户一条准确提示。
+   * 用户在界面上点开关仍走 setPower（即发即忘）。
+   */
+  async applyPower(id: string, on: boolean): Promise<void> {
+    const b = this.binds.get(id);
+    if (!b) throw new Error('设备不在当前清单中');
+    if (!b.props['on']) throw new Error('设备不支持开关');
+    await this._write(b, 'on', !!on, { strict: true });
   }
 
   /**
@@ -1018,6 +1059,23 @@ const rnd = (min: number, max: number) => Math.random() * (max - min) + min;
 const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max);
 const round1 = (v: number) => Math.round(v * 10) / 10;
 const round2 = (v: number) => Math.round(v * 100) / 100;
+
+/**
+ * 把严格模式写入的底层异常翻成一句用户能看懂的话（锁屏联动的失败提示用）。
+ *
+ * 底层错误来自 miIO socket 超时、云端错误码、node-mihome 内部异常，原文对
+ * 用户没有意义；这里只保留「离线 / 超时 / 其它」三档。
+ */
+function friendlyWriteError(err: any, b: Bind, field: string): string {
+  const raw = err && err.message ? String(err.message) : String(err || '');
+  if (b.props[field] === undefined) return '设备不支持该属性';
+  if (/offline|离线|3040|-704042011/i.test(raw)) return '设备离线';
+  if (/timeout|timed out|超时|ECONNREFUSED|EHOSTUNREACH/i.test(raw)) {
+    return '设备无响应（局域网与云端均超时）';
+  }
+  if (/auth|login|token|未登录/i.test(raw)) return '米家登录状态失效';
+  return raw || '写入失败';
+}
 
 /** 小米 IoT 云端错误码：设备离线。二维码会话的 /miotspec/prop/get 批量结果里会以该码返回。 */
 function isDeviceOfflineCode(code: number): boolean {
