@@ -1,0 +1,4 @@
+# GitHub Actions 的 workflow 固定用 LF 提交/检出：
+# core.autocrlf=true 的机器上默认会转成 CRLF，虽然解析器容错，但没必要冒这个风险。
+.github/workflows/*.yml   text eol=lf
+.github/workflows/*.yaml  text eol=lf
