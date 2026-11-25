@@ -1,0 +1,99 @@
+name: Release
+
+# 打 tag（形如 v0.1.13）即构建 Windows 安装包并发布 Release。
+#
+# 版本号必须与 package.json 的 version 一致，否则第一步就失败——避免
+# release 标题写着 v0.2.0、装出来的应用却报 0.1.13（electron-builder 的
+# artifactName 和 app.getVersion() 都取自 package.json）。
+#
+# 发版流程：
+#   1. 改 package.json 的 version 并提交
+#   2. git tag v0.1.13 && git push origin v0.1.13
+# 应用内「检查更新」读的是 /releases/latest，因此 tag 带连字符
+# （如 v0.2.0-beta.1）会按预发布处理，不推送给正式用户。
+on:
+  push:
+    tags:
+      - 'v*'
+
+# 创建 Release 与上传 asset 需要写权限
+permissions:
+  contents: write
+
+# 同一个 tag 重复触发时串行排队，不并发写同一个 Release
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Electron 二进制（~90MB）与 electron-builder 的 NSIS / winCodeSign
+      # 缓存包是构建耗时的大头，按 lockfile 做缓存键，依赖没变就直接复用
+      - name: 缓存 Electron 与打包器资源
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: 校验 tag 与 package.json 版本一致
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          echo "tag = $tag / package.json = $pkg"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag $GITHUB_REF_NAME 与 package.json 版本 $pkg 不一致，先改版本号再打 tag"
+            exit 1
+          fi
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建并打包
+        # 先 npm run build（tsc + esbuild + 静态资源镜像），再打 NSIS 安装包。
+        # --publish never：只产出文件，发布交给下面的 action，
+        # 避免 electron-builder 自带的发布逻辑与它重复上传同一个 asset。
+        run: |
+          npm run build
+          npx electron-builder --win --x64 --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 产物清单
+        shell: bash
+        run: ls -lh release
+
+      # 先存一份 job artifact：Release 那步失败时产物不至于丢失，方便下载排查。
+      # 只传安装包相关文件——release/ 下的 win-unpacked 是几百 MB 的中间目录，
+      # 全部上传会白占带宽和配额。
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenMexia-windows-x64-${{ github.ref_name }}
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: OpenMexia ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml

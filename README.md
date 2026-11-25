@@ -116,6 +116,18 @@ npm run dist
 
 产物输出在 `release/` 目录。当前构建脚本仅打包 Windows x64 NSIS 安装包；macOS / Linux / 移动端构建将随对应平台支持一同提供。
 
+### 发布版本（维护者）
+
+推送形如 `v0.1.13` 的 tag 会触发 GitHub Actions 自动构建并发布：
+
+```bash
+# 先把 package.json 的 version 改成对应版本并提交
+git tag v0.1.13
+git push origin v0.1.13
+```
+
+工作流（`.github/workflows/release.yml`）会先校验 tag 与 `package.json` 版本是否一致，不一致直接失败；然后构建 NSIS 安装包，产物先作为 job artifact 备份一份，再发布到 Releases。tag 带连字符（如 `v0.2.0-beta.1`）会标记为预发布——应用内「检查更新」读的是 `/releases/latest`，不会把预发布推给正式用户。
+
 ---
 ## Web 版（浏览器访问）
 
