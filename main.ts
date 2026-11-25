@@ -216,8 +216,10 @@ function toggleTheme() {
 }
 
 // 检查更新：查询 GitHub Releases 最新版本，与当前版本比较（关于窗口按钮使用）
-const RELEASES_API = 'https://api.github.com/repos/HZDavy/OpenMexia/releases/latest';
-const RELEASES_PAGE = 'https://github.com/HZDavy/OpenMexia/releases';
+// 必须指向本仓库（fork）而不是上游：上游发布里没有锁屏联动等自定义功能，
+// 一旦检查到上游新版本，会把用户引导去下载功能更少的安装包。
+const RELEASES_API = 'https://api.github.com/repos/PlanetEditorX/OpenMexia/releases/latest';
+const RELEASES_PAGE = 'https://github.com/PlanetEditorX/OpenMexia/releases';
 
 function fetchJson(url: string, timeout = 8000): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -1397,7 +1399,10 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(() => {
-    app.setAppUserModelId('com.mijia.widget');
+    // 必须与 package.json 的 build.appId 一致：安装包按 appId 生成快捷方式的
+    // AppUserModelID，这里若另写一个值，通知会归到不存在的应用上（不弹出）、
+    // 任务栏也会分成两个图标
+    app.setAppUserModelId('com.hzdavy.mijia-widget');
     // 主题：首次打开默认深色，之后沿用用户上次选择（避免浅色下启动瞬间露深色底）
     nativeTheme.themeSource = stateTheme();
 

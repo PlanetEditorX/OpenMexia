@@ -4,12 +4,16 @@
 
 <p align="center">
   <a href="https://hzdavy.github.io/OpenMexia/"><img src="https://img.shields.io/badge/%E5%AE%98%E7%BD%91-hzdavy.github.io%2FOpenMexia-22C688?style=flat-square&labelColor=1A1A1D&logo=githubpages&logoColor=FFFFFF" alt="官网"></a>
-  <a href="https://github.com/HZDavy/OpenMexia/releases/latest"><img src="https://img.shields.io/github/v/release/HZDavy/OpenMexia?style=flat-square&label=release&color=22C688&labelColor=1A1A1D" alt="最新版本"></a>
-  <a href="https://github.com/HZDavy/OpenMexia/releases"><img src="https://img.shields.io/github/downloads/HZDavy/OpenMexia/total?style=flat-square&label=%E4%B8%8B%E8%BD%BD&color=22C688&labelColor=1A1A1D" alt="下载量"></a>
+  <a href="https://github.com/PlanetEditorX/OpenMexia/releases/latest"><img src="https://img.shields.io/github/v/release/PlanetEditorX/OpenMexia?style=flat-square&label=release&color=22C688&labelColor=1A1A1D" alt="最新版本"></a>
+  <a href="https://github.com/PlanetEditorX/OpenMexia/releases"><img src="https://img.shields.io/github/downloads/PlanetEditorX/OpenMexia/total?style=flat-square&label=%E4%B8%8B%E8%BD%BD&color=22C688&labelColor=1A1A1D" alt="下载量"></a>
   <img src="https://img.shields.io/badge/Windows%2010%2F11-x64-22C688?style=flat-square&labelColor=1A1A1D" alt="平台">
   <img src="https://img.shields.io/badge/Electron-44-22C688?style=flat-square&labelColor=1A1A1D&logo=electron&logoColor=FFFFFF" alt="Electron">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/HZDavy/OpenMexia?style=flat-square&label=license&color=22C688&labelColor=1A1A1D" alt="许可"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/PlanetEditorX/OpenMexia?style=flat-square&label=license&color=22C688&labelColor=1A1A1D" alt="许可"></a>
 </p>
+
+> [!IMPORTANT]
+> 本仓库是 [HZDavy/OpenMexia](https://github.com/HZDavy/OpenMexia) 的 fork，在上游基础上额外包含**锁屏联动**（锁屏 / 解锁 / 启动时自动开关设备与米家自动化）、Yeelight 局域网直连修复等功能。
+> 下载请使用本仓库的 [Releases](https://github.com/PlanetEditorX/OpenMexia/releases)，上游安装包不含这些功能；应用内「检查更新」也已指向本仓库。
 
 欢迎通过 [Issues](https://github.com/HZDavy/OpenMexia/issues) 提交功能建议与 Bug 反馈，也欢迎直接提交 [Pull Request](https://github.com/HZDavy/OpenMexia/pulls)。
 
@@ -20,7 +24,7 @@ OpenMexia 是一个以本地掌控为核心的跨平台智能家居控制中枢�
 
 提供基于 Electron 的 Windows 10 / 11 x64 桌面版本，macOS、iOS、Android、Linux 与鸿蒙在路线图上；各平台共用一套账号与卡片，只做原生适配，不重做体验。
 
-安装包从 [Releases](https://github.com/HZDavy/OpenMexia/releases) 下载，功能与使用说明见下方。
+安装包从 [Releases](https://github.com/PlanetEditorX/OpenMexia/releases) 下载，功能与使用说明见下方。
 
 ---
 ## 界面预览
@@ -39,7 +43,7 @@ OpenMexia 是一个以本地掌控为核心的跨平台智能家居控制中枢�
 
 | 平台 | 状态 | 说明 |
 |---|---|---|
-| Windows 10 / 11（x64） | ✅ 已发布 v0.1.12 | NSIS 安装包，见 [Releases](https://github.com/HZDavy/OpenMexia/releases) |
+| Windows 10 / 11（x64） | ✅ 已发布 v0.1.14 | NSIS 安装包，含锁屏联动，见 [Releases](https://github.com/PlanetEditorX/OpenMexia/releases) |
 | macOS | 🚧 规划中 | 桌面端基于 Electron，下一个目标平台 |
 | iOS（iPhone / iPad） | 📋 计划中 | 复用同一套设备核心，卡片交互一致 |
 | Android（手机 / 平板） | 📋 计划中 | 同 iOS |
@@ -92,7 +96,7 @@ OpenMexia 是一个以本地掌控为核心的跨平台智能家居控制中枢�
 
 ## 下载安装
 
-到 [Releases](https://github.com/HZDavy/OpenMexia/releases) 下载 `OpenMexia-Setup-x.x.x.exe`，运行后按提示安装，可自选目录。
+到 [Releases](https://github.com/PlanetEditorX/OpenMexia/releases) 下载 `OpenMexia-Setup-x.x.x.exe`，运行后按提示安装，可自选目录。
 
 > **SmartScreen 提示**：本项目为个人开源项目，安装包暂无代码签名证书。首次运行时 Windows 可能弹出「已保护你的电脑」，点击「更多信息」→「仍要运行」即可。软件完全开源，可自行审计源码或从源码构建。
 

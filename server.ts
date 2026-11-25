@@ -134,8 +134,9 @@ async function boot() {
 
 /* ---------------- 版本检查 ---------------- */
 
-const RELEASES_API = 'https://api.github.com/repos/HZDavy/OpenMexia/releases/latest';
-const RELEASES_PAGE = 'https://github.com/HZDavy/OpenMexia/releases';
+// 与 main.ts 保持一致：指向本仓库（fork）的 Releases，而不是上游
+const RELEASES_API = 'https://api.github.com/repos/PlanetEditorX/OpenMexia/releases/latest';
+const RELEASES_PAGE = 'https://github.com/PlanetEditorX/OpenMexia/releases';
 
 function fetchJson(url: string, timeout = 8000): Promise<any> {
   return new Promise((resolve, reject) => {
