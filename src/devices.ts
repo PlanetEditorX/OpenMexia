@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import * as net from 'net';
 import * as path from 'path';
 import * as os from 'os';
 import { getSpec, analyze } from './miot-spec';
@@ -13,6 +14,13 @@ import type { MijiaLogin } from './mijia-login';
 
 /** 连续这么多次探测失败才把设备标成离线（轮询 5 秒一轮，约 15 秒）。 */
 const POLL_FAILURES_BEFORE_OFFLINE = 3;
+
+/**
+ * Yeelight 传统局域网协议端口：TCP 55443，一行一个 JSON。
+ * 注意这跟小米 miIO 的 UDP 54321 是两套完全不同的东西——拿 miioProtocol 去发
+ * get_prop / set_power 只会一直超时（Yeelight 不听 UDP miIO）。
+ */
+const YEELIGHT_PORT = 55443;
 
 /**
  * 多键面板的虚拟子设备 did 后缀：`<父did>.sN`，N 是该路按键在规格里的 siid。
@@ -352,6 +360,8 @@ class MiioProvider extends EventEmitter {
   _pollFailures: Map<string, number>;
   _miioReady: boolean;
   _localSubnets: Set<string>;
+  /** Yeelight TCP 55443 请求序号：设备按 id 回响应，必须自增且不重复 */
+  _yeelightSeq = 1;
 
   constructor({ dataDir, login, homeId }: ProviderOptions) {
     super();
@@ -747,16 +757,61 @@ class MiioProvider extends EventEmitter {
   }
 
   /**
+   * Yeelight 传统局域网协议调用：TCP 55443，一行一个 JSON 请求/响应。
+   *
+   * 设备会主动推送 props 通知（不带 id），所以必须按 id 匹配响应，不能见一行就当结果。
+   * 每次调用独立建连、拿到响应即断开——挂灯这类设备对长连接有超时回收，
+   * 复用连接反而容易在空闲后拿到半死 socket。
+   */
+  _yeelightCall(b: Bind, method: string, params: any[], timeoutMs = 2500): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const id = ++this._yeelightSeq;
+      const sock = net.connect(YEELIGHT_PORT, b.ip);
+      let buf = '';
+      let settled = false;
+      const finish = (err: any, value?: any) => {
+        if (settled) return;
+        settled = true;
+        try { sock.destroy(); } catch { /* 已断开 */ }
+        if (err) reject(err); else resolve(value);
+      };
+      sock.setTimeout(timeoutMs, () => finish(new Error('Yeelight 局域网超时')));
+      sock.on('error', (e: any) => finish(new Error(e && e.code ? e.code : String(e))));
+      sock.on('connect', () => {
+        sock.write(JSON.stringify({ id, method, params }) + '\r\n');
+      });
+      sock.on('data', (chunk) => {
+        buf += chunk.toString('utf8');
+        let idx = buf.indexOf('\r\n');
+        while (idx >= 0) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 2);
+          idx = buf.indexOf('\r\n');
+          if (!line) continue;
+          let msg: any;
+          try { msg = JSON.parse(line); } catch { continue; }
+          if (!msg || msg.id !== id) continue;   // 推送通知 / 其它请求的响应，跳过
+          if (msg.error) return finish(new Error(`Yeelight 错误 ${JSON.stringify(msg.error)}`));
+          return finish(null, msg.result);
+        }
+      });
+    });
+  }
+
+  /**
    * Yeelight 传统局域网读：get_prop 返回字符串数组，顺序与请求一致。
-   * 请求 ['power','bright','ct'] → ['off', '100', '3200']。
-   * 仅灯类使用；非灯类实现由调用方保证不进入本方法。
+   *
+   * 单独读 main_power：显示器挂灯这类「主灯 + 氛围灯」的型号里，power 表示整体
+   * 电源、main_power 才是主灯（真正亮着的那路）。只读 power 会出现「人眼看到
+   * 灯灭了，界面仍显示开」的错判——锁屏联动的状态反馈也会跟着错。
+   * 不支持该属性的型号回 'error'，此时退回 power 判定。
    */
   async _yeelightRead(b: Bind, dev: Device) {
-    const res = await this.mihome.miioProtocol.send(
-      b.ip, 'get_prop', ['power', 'bright', 'ct'], { retries: 0 },
-    );
+    const res = await this._yeelightCall(b, 'get_prop', ['power', 'bright', 'ct', 'main_power']);
     if (!Array.isArray(res) || res.length < 2) throw new Error('legacy get_prop 返回异常');
-    this._setField(dev, 'on', String(res[0]) === 'on', b);
+    const main = res[3];
+    const hasMain = typeof main === 'string' && main !== 'error' && main !== '';
+    this._setField(dev, 'on', hasMain ? main === 'on' : String(res[0]) === 'on', b);
     this._setField(dev, 'brightness', Number(res[1]), b);
     if (b.props.colorTemperature) this._setField(dev, 'colorTemperature', Number(res[2]), b);
     return res;
@@ -764,11 +819,9 @@ class MiioProvider extends EventEmitter {
 
   /** Yeelight 传统局域网写：on → set_power / brightness → set_bright / colorTemperature → set_ct_abx */
   async _yeelightWrite(b: Bind, field: string, value: any) {
-    const send = (method: string, params: any[]) =>
-      this.mihome.miioProtocol.send(b.ip, method, params, { retries: 0 });
-    if (field === 'on') return send('set_power', [value ? 'on' : 'off', 'smooth', 500]);
-    if (field === 'brightness') return send('set_bright', [Math.round(value), 'smooth', 500]);
-    if (field === 'colorTemperature') return send('set_ct_abx', [Math.round(value), 'smooth', 500]);
+    if (field === 'on') return this._yeelightCall(b, 'set_power', [value ? 'on' : 'off', 'smooth', 500]);
+    if (field === 'brightness') return this._yeelightCall(b, 'set_bright', [Math.round(value), 'smooth', 500]);
+    if (field === 'colorTemperature') return this._yeelightCall(b, 'set_ct_abx', [Math.round(value), 'smooth', 500]);
     throw new Error(`legacy 协议不支持字段 ${field}`);
   }
 
