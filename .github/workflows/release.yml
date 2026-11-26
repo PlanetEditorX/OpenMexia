@@ -82,9 +82,15 @@ jobs:
       - name: 生成发布说明
         shell: bash
         run: |
-          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > release-notes.md
+          # annotated tag 的注释就是这版发布说明。checkout 默认只保证 commit 到手，
+          # tag 对象可能缺失（此时 %(contents) 为空、正文会退化成 commit message），
+          # 所以先补一次 tags，再用 for-each-ref 精确取当前 tag 的注释。
+          git fetch --tags --force origin >/dev/null 2>&1 || true
+          git for-each-ref --format='%(contents)' "refs/tags/${GITHUB_REF_NAME}" > release-notes.md
+          echo "release-notes.md bytes: $(wc -c < release-notes.md)"
           if [ ! -s release-notes.md ]; then
-            echo "OpenMexia ${GITHUB_REF_NAME#v}" > release-notes.md
+            echo "::error::读不到 tag ${GITHUB_REF_NAME} 的注释，Release 正文会退化成 commit message，先中止"
+            exit 1
           fi
           echo "---------------- release notes ----------------"
           cat release-notes.md
@@ -100,6 +106,7 @@ jobs:
             release/*.exe
             release/*.blockmap
             release/latest.yml
+            release-notes.md
           if-no-files-found: error
           retention-days: 7
 
@@ -107,7 +114,8 @@ jobs:
         with:
           name: OpenMexia ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
-          body_path: release-notes.md
+          # 显式绝对路径：action 内部解析相对路径依赖 cwd，写死 workspace 路径最稳
+          body_path: ${{ github.workspace }}/release-notes.md
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             release/*.exe
