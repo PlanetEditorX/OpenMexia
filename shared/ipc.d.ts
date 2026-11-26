@@ -83,6 +83,8 @@ export type IpcChannel =
   | 'widget:set-field'
   | 'widget:call-action'
   | 'widget:hide'
+  // 右上角关闭按钮：小组件模式隐藏到托盘，窗口模式（无托盘）直接关闭退出
+  | 'widget:close-window'
   | 'widget:resize'
   | 'widget:quit'
   | 'widget:toggle-top'
@@ -151,6 +153,8 @@ export interface IpcApi {
 
   // ---- 窗口 / 外观 ----
   hide(): void;
+  /** 右上角关闭：小组件模式收起到托盘，窗口模式直接关闭退出 */
+  closeWindow(): void;
   resize(height: number): void;
   quit(): void;
   setTheme(theme: Theme): void;

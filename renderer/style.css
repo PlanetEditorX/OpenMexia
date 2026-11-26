@@ -333,6 +333,9 @@ html, body {
 .icon-btn.danger:hover { background: rgba(255, 86, 86, 0.18); color: #ff8a8a; }
 .icon-btn.active { color: var(--accent-2); background: rgba(25, 205, 144, 0.16); }
 
+/* 右上角关闭按钮：紧贴汉堡按钮右侧。hover 保持中性色——小组件模式下它是「收起到托盘」而非危险操作 */
+#btn-close { margin-left: 2px; }
+
 /* ---------------- 设备列表 ---------------- */
 
 .devices {

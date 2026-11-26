@@ -1296,6 +1296,16 @@ function registerIpc() {
     if (typeof provider.callAction === 'function') provider.callAction(id, key);
   });
   ipcMain.on('widget:hide', () => win && win.hide());
+  // 右上角关闭按钮。小组件模式下托盘是唯一恢复入口，隐藏窗口即可；
+  // 窗口模式没有托盘（切模式时已 destroy），隐藏就再也叫不回来，因此走正常关闭流程退出。
+  ipcMain.on('widget:close-window', () => {
+    if (!win || win.isDestroyed()) return;
+    if (windowMode() === 'widget' && !app.isQuitting) {
+      win.hide();
+    } else {
+      win.close();
+    }
+  });
   // 渲染层首次加载后测量内容高度，微调一次窗口高度；之后由用户自由缩放
   ipcMain.on('widget:resize', (_e, { height } = {}) => {
     if (!win || !Number.isFinite(height)) return;

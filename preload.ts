@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('mijia', {
   setField: (id, field, value) => ipcRenderer.send('widget:set-field', { id, field, value }),
   callAction: (id, key) => ipcRenderer.send('widget:call-action', { id, key }),
   hide: () => ipcRenderer.send('widget:hide'),
+  // 右上角关闭：主进程按模式决定「收起到托盘」还是「真正关闭」
+  closeWindow: () => ipcRenderer.send('widget:close-window'),
   resize: (height) => ipcRenderer.send('widget:resize', { height }),
   quit: () => ipcRenderer.send('widget:quit'),
   // 深色 / 浅色主题：通知主进程同步窗口底色与原生主题

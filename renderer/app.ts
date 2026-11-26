@@ -2288,6 +2288,7 @@ function render(devices) {
 /* ---------------- 应用内弹出菜单（独立窗口，不受主窗口边界裁剪） ---------------- */
 
 const btnMenu = document.getElementById('btn-menu');
+const btnClose = document.getElementById('btn-close');
 const menuEl = document.getElementById('menu');
 // 应用内菜单与设备右键菜单共用一个弹出窗口，因此共用一个「已展开」状态
 let menuOpen = false;
@@ -2367,6 +2368,12 @@ miReset.addEventListener('click', () => window.mijia.sendToSecondScreen());
 miFs.addEventListener('click', () => window.mijia.fullscreen('normal'));
 miFsCover.addEventListener('click', () => window.mijia.fullscreen('cover'));
 miHide.addEventListener('click', () => window.mijia.hide());
+// 右上角关闭：小组件模式收起到托盘，窗口模式退出（具体由主进程按当前模式判定）。
+// 菜单展开时先收起——否则窗口隐藏后弹出菜单会孤零零留在桌面上。
+btnClose.addEventListener('click', () => {
+  if (menuOpen) closeMenu();
+  window.mijia.closeWindow();
+});
 document.getElementById('mi-quit').addEventListener('click', () => window.mijia.quit());
 
 /* ---------------- 深色 / 浅色主题 ---------------- */
@@ -2411,6 +2418,10 @@ function applyWindowMode(mode) {
   miHide.hidden = !widget;
   // 「开机启动（托盘）」只有小组件模式才有
   miLoginTray.hidden = !widget;
+  // 右上角关闭按钮在两种模式下语义不同：小组件 = 收起到托盘，窗口 = 退出
+  const closeLabel = widget ? '收起到托盘' : '关闭';
+  btnClose.title = closeLabel;
+  btnClose.setAttribute('aria-label', closeLabel);
 }
 
 miMode.addEventListener('click', () => window.mijia.toggleWindowMode());

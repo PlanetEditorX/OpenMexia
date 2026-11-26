@@ -288,6 +288,7 @@
 
     // 桌面专属能力：Web 版没有对应概念，做成安全的空操作
     hide: () => {},
+    closeWindow: () => {},
     resize: () => {},
     quit: () => {},
     setTheme: (theme: string) => post('/api/theme', { theme }),
@@ -386,5 +387,9 @@
   (window as any).mijia = api;
 
   // 菜单 / 弹窗 iframe 里没有主界面，不需要订阅设备事件流
-  if (!isMenuFrame) connectEvents();
+  if (!isMenuFrame) {
+    connectEvents();
+    // Web 版没有托盘，右上角「关闭/收起」按钮无处可去，直接隐藏，避免留下点不动的死按钮
+    document.getElementById('btn-close')?.remove();
+  }
 })();
